@@ -1,0 +1,539 @@
+                   K IMI K2.5: V ISUAL AGENTIC I NTELLIGENCE
+
+                                         T ECHNICAL R EPORT OF K IMI K2.5
+
+
+                                                      Kimi Team
+
+
+
+                                                     A BSTRACT
+         We introduce Kimi K2.5, an open-source multimodal agentic model designed to advance general
+         agentic intelligence. K2.5 emphasizes the joint optimization of text and vision so that two modali-
+         ties enhance each other. This includes a series of techniques such as joint text-vision pre-training,
+         zero-vision SFT, and joint text-vision reinforcement learning. Building on this multimodal foun-
+         dation, K2.5 introduces Agent Swarm, a self-directed parallel agent orchestration framework that
+         dynamically decomposes complex tasks into heterogeneous sub-problems and executes them con-
+         currently. Extensive evaluations show that Kimi K2.5 achieves state-of-the-art results across various
+         domains including coding, vision, reasoning, and agentic tasks. Agent Swarm also reduces latency
+         by up to 4.5× over single-agent baselines. We release the post-trained Kimi K2.5 model checkpoint1
+         to facilitate future research and real-world applications of agentic intelligence.
+
+
+
+
+                                          Figure 1: Kimi K2.5 main results.
+
+
+
+1    Introduction
+
+Large Language Models (LLMs) are rapidly evolving toward agentic intelligence. Recent advances, such as GPT-
+5.2 [41], Claude Opus 4.5 [6], Gemini 3 Pro [20], and Kimi K2-Thinking [1], demonstrate substantial progress in
+agentic capabilities, particularly in tool calling and reasoning. These models increasingly exhibit the ability to decom-
+pose complex problems into multi-step plans and to execute long sequences of interleaved reasoning and actions.
+
+    1 https://huggingface.co/moonshotai/Kimi-K2.5
+                                                        Kimi K2.5                                    T ECHNICAL R EPORT
+
+
+
+In this report, we introduce the training methods and evaluation results of Kimi K2.5. Concretely, we improve the
+training of K2.5 over previous models in the following two key aspects.
+Joint Optimization of Text and Vision. A key insight from the practice of K2.5 is that joint optimization of text and
+vision enhances both modalities and avoids the conﬂict. Speciﬁcally, we devise a set of techniques for this purpose.
+During pre-training, in contrast to conventional approaches that add visual tokens to a text backbone at a late stage [8,
+21], we ﬁnd early vision fusion with lower ratios tends to yield better results given the ﬁxed total vision-text tokens.
+Therefore, K2.5 mixes text and vision tokens with a constant ratio throughout the entire training process.
+Architecturally, Kimi K2.5 employs MoonViT-3D, a native-resolution vision encoder incorporating the NaViT packing
+strategy [15], enabling variable-resolution image inputs. For video understanding, we introduce a lightweight 3D ViT
+compression mechanism: consecutive frames are grouped in fours, processed through the shared MoonViT encoder,
+and temporally averaged at the patch level. This design allows Kimi K2.5 to process videos up to 4 × longer within
+the same context window while maintaining complete weight sharing between image and video encoders.
+During post-training, we introduce zero-vision SFT—text-only SFT alone activates visual reasoning and tool use.
+We ﬁnd that adding human-designed visual trajectories at this stage hurts generalization. In contrast, text-only SFT
+performs better—likely because joint pretraining already establishes strong vision-text alignment, enabling capabilities
+to generalize naturally across modalities. We then apply joint RL on both text and vision tasks. Crucially, we ﬁnd
+visual RL enhances textual performance rather than degrading it, with improvements on MMLU-Pro and GPQA-
+Diamond. This bidirectional enhancement—text bootstraps vision, vision reﬁnes text—represents superior cross-
+modal alignment in joint training.
+Agent Swarm: Parallel Agent Orchestration. Most existing agentic models rely on sequential execution of tool
+calls. Even systems capable of hundreds of reasoning steps, such as Kimi K2-Thinking [1], suffer from linear scaling
+of inference time, leading to unacceptable latency and limiting task complexity. As agentic workloads grow in scope
+and heterogeneity—e.g., building a complex project that involves massive-scale research, design, and development—
+the sequential paradigm becomes increasingly inefﬁcient.
+To overcome the latency and scalability limits of sequential agent execution, Kimi K2.5 introduces Agent Swarm, a
+dynamic framework for parallel agent orchestration. We propose a Parallel-Agent Reinforcement Learning (PARL)
+paradigm that departs from traditional agentic RL [2]. In addition to optimizing tool execution via veriﬁable rewards,
+the model is equipped with interfaces for sub-agent creation and task delegation. During training, sub-agents are
+frozen and their execution trajectories are excluded from the optimization objective; only the orchestrator is updated via
+reinforcement learning. This decoupling circumvents two challenges of end-to-end co-optimization: credit assignment
+ambiguity and training instability. Agent Swarm enables complex tasks to be decomposed into heterogeneous sub-
+problems executed concurrently by domain-specialized agents, transforming task complexity from linear scaling to
+parallel processing. In wide-search scenarios, Agent Swarm reduces inference latency by up to 4.5× while improving
+item-level F1 from 72.8% to 79.0% compared to single-agent baselines.
+Kimi K2.5 represents a uniﬁed architecture for general-purpose agentic intelligence, integrating vision and language,
+thinking and instant modes, chats and agents. It achieves strong performance across a broad range of agentic and
+frontier benchmarks, including state-of-the-art results in visual-to-code generation (image/video-to-code) and real-
+world software engineering in our internal evaluations, while scaling both the diversity of specialized agents and the
+degree of parallelism. To accelerate community progress toward General Agentic Intelligence, we open-source our
+post-trained checkpoints of Kimi K2.5, enabling researchers and developers to explore, reﬁne, and deploy scalable
+agentic intelligence.
+
+
+2     Joint Optimization of Text and Vision
+
+Kimi K2.5 is a native multimodal model built upon Kimi K2 through large-scale joint pre-training on approximately
+15 trillion mixed visual and text tokens. Unlike vision-adapted models that compromise either linguistic or visual
+capabilities, our joint pre-training paradigm enhances both modalities simultaneously. This section describes the
+multimodal joint optimization methodology that extends Kimi K2 to Kimi K2.5.
+
+2.1   Native Multimodal Pre-Training
+
+A key design question for multimodal pre-training is: Given a ﬁxed vision-text token budget, what is the optimal
+vision-text joint-training strategy. Conventional wisdom [8, 21] suggests introducing vision tokens predominantly in
+the later stages of LLM training at high ratios (e.g., 50% or higher) should accelerate multimodal capability acquisition,
+treating multimodal capability as a post-hoc add-on to linguistic competence.
+
+
+                                                            2
+                                                         Kimi K2.5                                    T ECHNICAL R EPORT
+
+
+
+Table 1: Performance comparison across different vision-text joint-training strategies. Early fusion with a lower vision
+ratio yields better results given a ﬁxed total vision-text token budget.
+            Vision Injection Vision-Text           Vision        Vision               Text           Text
+                 Timing             Ratio       Knowledge Reasoning OCR Knowledge Reasoning Code
+  Early           0%            10%:90%           25.8           43.8       65.7        45.5           58.5       24.8
+  Mid            50%            20%:80%           25.0           40.7       64.1        43.9           58.6       24.0
+  Late           80%            50%:50%           24.2           39.0       61.5        43.1           57.8       24.0
+
+
+However, our experiments (as shown in Table 1 Figure 9) reveal a different story. We conducted ablation studies
+varying the vision ratio and vision injection timing while keeping the total vision and text token budgets ﬁxed. To
+strictly meet the targets for different ratios, we pre-trained the model with text-only tokens for a speciﬁcally calculated
+number of tokens before introducing vision data. Surprisingly, we found that the vision ratio has minimal impact on
+ﬁnal multimodal performance. In fact, early fusion with a lower vision ratio yields better results given a ﬁxed
+total vision-text token budget. This motivates our native multimodal pre-training strategy: rather than aggressive
+vision-heavy training concentrated at the end, we adopt a moderate vision ratio integrated early in the training process,
+allowing the model to naturally develop balanced multimodal representations while beneﬁting from extended co-
+optimization of both modalities.
+
+2.2   Zero-Vision SFT
+
+Pretrained VLMs do not naturally perform vision-based tool-calling, which poses a cold-start problem for multimodal
+RL. Conventional approaches address this issue through manually annotated or prompt-engineered chain-of-thought
+(CoT) data [8], but such methods are limited in diversity, often restricting visual reasoning to simple diagrams and
+primitive tool manipulations (crop, rotate, flip).
+An observation is that high-quality text SFT data are relatively abundant and diverse. We propose a novel approach,
+zero-vision SFT, that uses only text SFT data to activate the visual, agentic capabilities during post-training. In this
+approach, all image manipulations are proxied through programmatic operations in IPython, effectively serving
+as a generalization of traditional vision tool-use. This "zero-vision" activation enables diverse reasoning behaviors,
+including pixel-level operations such as object size estimation via binarization and counting, and generalizes to visually
+grounded tasks such as object localization, counting, and OCR.
+Figure 2 illustrates the RL training curves, where the starting points are obtained from zero-vision SFT. The results
+show that zero-vision SFT is sufﬁcient for activating vision capabilities while ensuring generalization across modal-
+ities. This phenomenon is likely due to the joint pretraining of text and vision data as described in Section 2.1.
+Compared to zero-vision SFT, our preliminary experiments show that text-vision SFT yields much worse performance
+on visual, agentic tasks, possibly because of the lack of high-quality vision data.
+
+2.3   Joint Multimodal Reinforcement Learning (RL)
+
+In this section, we describe the methodology implemented in K2.5 that enables effective multimodal RL, from
+outcome-based visual RL to emergent cross-modal transfer that enhances textual performance.
+
+Outcome-Based Visual RL Following the zero-vision SFT, the model requires further reﬁnement to reliably incor-
+porate visual inputs into reasoning. Text-initiated activation alone exhibits notable failure modes: visual inputs are
+sometimes ignored, and images may not be attended to when necessary. We employ outcome-based RL on tasks that
+explicitly require visual comprehension for correct solutions. We categorize these tasks into three domains:
+
+  • Visual grounding and counting: Accurate localization and enumeration of objects within images;
+  • Chart and document understanding: Interpretation of structured visual information and text extraction;
+  • Vision-critical STEM problems: Mathematical and scientiﬁc questions ﬁltered to require visual inputs.
+
+Outcome-based RL on these tasks improves both basic visual capabilities and more complex agentic behaviors. Ex-
+tracting these trajectories for rejection-sampling ﬁne-tuning (RFT) enables a self-improving data pipeline, allowing
+subsequent joint RL stages to leverage richer multimodal reasoning traces.
+
+
+                                                            3
+                                                        Kimi K2.5                                   T ECHNICAL R EPORT
+
+
+
+
+Figure 2: Vision RL training curves on vision benchmarks starting from minimal zero-vision SFT. By scaling vision
+RL FLOPs, the performance continues to improve, demonstrating that zero-vision activation paired with long-running
+RL is sufﬁcient for acquiring robust visual capabilities.
+
+
+                     Table 2: Cross-Modal Transfer: Vision RL Improves Textual Knowledge
+                    Benchmark        Before Vision-RL After Vision-RL Improvement
+                    MMLU-Pro                    84.7                  86.4               +1.7
+                    GPQA-Diamond                84.3                  86.4               +2.1
+                    LongBench v2                56.7                  58.9               +2.2
+
+
+Visual RL Improves Text Performance To investigate potential trade-offs between visual and textual performance,
+we evaluated text-only benchmarks before and after visual RL. Surprisingly, outcome-based visual RL produced mea-
+surable improvements in textual tasks, including MMLU-Pro (84.7% → 86.4%), GPQA-Diamond (84.3% → 86.4%),
+and LongBench v2 (56.7% → 58.9%) (Table 2). Analysis suggests that visual RL enhances calibration in areas re-
+quiring structured information extraction, reducing uncertainty on queries that resemble visually grounded reasoning
+(e.g., counting, OCR). These ﬁndings indicate that visual RL can contribute to cross-modal generalization, improving
+textual reasoning without observable degradation of language capabilities.
+Joint Multimodal RL Motivated by the ﬁnding that robust visual capabilities can emerge from zero-vision SFT paired
+with vision RL—which further enhances general text abilities—we adopt a joint multimodal RL paradigm during Kimi
+K2.5’s post-training. Departing from conventional modality-speciﬁc expert divisions, we organize RL domains not
+by input modality but by abilities—knowledge, reasoning, coding, agentic, etc. These domain experts jointly learn
+from both pure-text and multimodal queries, while the Generative Reward Model (GRM) similarly optimizes across
+heterogeneous traces without modality barriers. This pardaigm ensures that capability improvements acquired through
+either textual or visual inputs inherently generalize to enhance related abilities across the alternate modality, thereby
+maximizing cross-modal capability transfer.
+
+3   Agent Swarm
+The primary challenge of existing agent-based systems lies in their reliance on sequential execution of reasoning and
+tool-calling steps. While this structure may be effective for simpler, short-horizon tasks, it becomes inadequate as the
+complexity of the task increases and the accumulated context grows. As tasks evolve to contain broad information
+gathering and intricate, multi-branch reasoning, sequential systems often encounter signiﬁcant bottlenecks [5, 6, 7].
+
+
+                                                           4
+                                                                Kimi K2.5                                                        T ECHNICAL R EPORT
+
+
+
+
+Figure 3: An agent swarm has a trainable orchestrator that dynamically creates specialized frozen subagents and
+decomposes complex tasks into parallelizable subtasks for efﬁcient distributed execution.
+
+
+The limited capacity of a single agent working through each step one by one can lead to the exhaustion of practical
+reasoning depth and tool-call budgets, ultimately hindering the system’s ability to handle more complex scenarios.
+To address this, we introduce Agent Swarm and Parallel Agent Reinforcement Learning (PARL). Instead of exe-
+cuting a task as a reasoning chain or relying on pre-speciﬁed parallelization heuristics, K2.5 initiates an Agent Swarm
+through dynamic task decomposition, subagent instantiation, and parallel subtask scheduling. Importantly, parallelism
+is not presumed to be inherently advantageous; decisions regarding whether, when, and how to parallelize are explic-
+itly learned through environmental feedback and RL-driven exploration. As shown in Figure 4, the progression of
+performance demonstrates this adaptive capability, with the cumulative reward increasing smoothly as the orchestrator
+optimizes its parallelization strategy throughout training.
+
+Architecture and Learning Setup The PARL framework adopts a decoupled architecture comprising a trainable
+orchestrator and frozen subagents instantiated from ﬁxed intermediate policy checkpoints. This design deliberately
+avoids end-to-end co-optimization to circumvent two fundamental challenges: credit assignment ambiguity and train-
+ing instability. In this multi-agent setting, outcome-based rewards are inherently sparse and noisy; a correct ﬁnal
+answer does not guarantee ﬂawless subagent execution, just as a failure does not imply universal subagent error. By
+freezing the subagents and treating their outputs as environmental observations rather than differentiable decision
+points, we disentangle high-level coordination logic from low-level execution proﬁciency, leading to more robust con-
+vergence. To improve efﬁciency, we ﬁrst train the orchestrator using small-size subagents before transitioning to larger
+models. Our RL framework also supports dynamically adjusting the inference instance ratios between subagents and
+the orchestrator, thereby maximizing the resource usage across the cluster.
+
+PARL Reward Training a reliable parallel orchestrator is challenging due to the delayed, sparse, and non-stationary
+feedback inherent in independent subagent execution. To address this, we deﬁne the PARL reward as:
+                       rPARL (x, y) = λ1 ·        rparallel         +λ 2 ·         rﬁnish           +      rperf (x, y)      .
+                                                  | {z }                           | {z }                  | {z }
+                                             instantiation reward            sub-agent ﬁnish rate       task-level outcome
+
+The performance reward rperf evaluates the overall success and quality of the solution y for a given task x. This
+is augmented by two auxiliary rewards, each addressing a distinct challenge in learning parallel orchestration. The
+reward rparallel is introduced to mitigate serial collapse—a local optimum where the orchestrator defaults to single-
+agent execution. By incentivizing subagent instantiation, this term encourages the exploration of concurrent scheduling
+
+
+                                                                      5
+                                                           Kimi K2.5                                    T ECHNICAL R EPORT
+
+
+
+
+Figure 4: In our parallel-agent reinforcement learning environment, the training accuracy increases smoothly as train-
+ing progresses. At the same time, the level of parallelism during training also gradually increases.
+
+
+spaces. The rﬁnish reward focuses on the successful completion of assigned subtasks. It is used to prevent spurious
+parallelism, a reward-hacking behavior in which the orchestrator increases parallel metrics dramatically by spawning
+many subagents without meaningful task decomposition. By rewarding completed subtasks, rﬁnish enforces feasibility
+and guides the policy toward valid and effective decompositions.
+To ensure the ﬁnal policy optimizes for the primary objective, the hyperparameters λ1 and λ2 are annealed to zero over
+the course of training.
+
+Critical Steps as Resource Constraint To measure computational time cost in a parallel-agent setting, we deﬁne
+critical steps by analogy to the critical path in a computation graph. We model an episode as a sequence of execution
+stages indexed by t = 1, . . . , T . In each stage, the main agent executes an action, which corresponds to either direct tool
+                                                                                       (t)
+invocation or the instantiation of a group of subagents running in parallel. Let Smain denote the number of steps taken
+                                         (t)              (t)
+by the main agent in stage t (typically Smain = 1), and Ssub,i denote the number of steps taken by the i-th subagent in that
+parallel group. The duration of stage t is governed by the longest-running subagent within that cohort. Consequently,
+the total critical steps for an episode are deﬁned as
+                                                          T                     
+                                         CriticalSteps = ∑ Smain + max Ssub,i .
+                                                                 (t)         (t)
+                                                                         i
+                                                          t=1
+By constraining training and evaluation using critical steps rather than total steps, the framework explicitly incentivizes
+effective parallelization. Excessive subtask creation that does not reduce the maximum execution time of parallel
+groups yields little beneﬁt under this metric, while well-balanced task decomposition that shortens the longest parallel
+branch directly reduces critical steps. As a result, the orchestrator is encouraged to allocate work across subagents in
+a way that minimizes end-to-end latency, rather than merely maximizing concurrency or total work performed.
+
+Prompt Construction for Parallel-agent Capability Induction To incentivize the orchestrator to leverage the ad-
+vantages of parallelization, we construct a suite of synthetic prompts designed to stress the limits of sequential agentic
+execution. These prompts emphasize either wide search, requiring simultaneous exploration of many independent
+information sources, or deep search, requiring multiple reasoning branches with delayed aggregation. We additionally
+include tasks inspired by real-world workloads, such as long-context document analysis and large-scale ﬁle down-
+loading. When executed sequentially, these tasks are difﬁcult to complete within ﬁxed reasoning-step and tool-call
+budgets. By construction, they encourage the orchestrator to allocate subtasks in parallel, enabling completion within
+fewer critical steps than would be feasible for a single sequential agent. Importantly, the prompts do not explicitly in-
+struct the model to parallelize. Instead, they shape the task distribution such that parallel decomposition and scheduling
+strategies are naturally favored.
+
+4     Method Overview
+4.1   Foundation: Kimi K2 Base Model
+
+The foundation of Kimi K2.5 is Kimi K2 [53], a trillion-parameter mixture-of-experts (MoE) transformer [59] model
+pre-trained on 15 trillion high-quality text tokens. Kimi K2 employs the token-efﬁcient MuonClip optimizer [30,
+
+
+                                                                6
+                                                        Kimi K2.5                                  T ECHNICAL R EPORT
+
+
+
+Table 3: Overview of training stages: data composition, token volumes, sequence lengths, and trainable components.
+      Stages                  ViT Training             Joint Pre-training      Joint Long-context Mid-training
+                                                               +                               +
+                                Alt text
+                                                       Text, Knowledge          High-quality Text & Multimodal
+      Data                 Synthesis Caption
+                                                         Interleaving               Long Text, Long Video
+                         Grounding, OCR, Video
+                                                     Video, OS Screenshot           Reasoning, Long-CoT
+      Sequence length              4096                        4096                     32768→262144
+      Tokens                        1T                         15T                        500B→200B
+      Training                      ViT                   ViT & LLM                       ViT & LLM
+
+
+
+34] with QK-Clip for training stability. The model comprises 1.04 trillion total parameters with 32 billion activated
+parameters, utilizing 384 experts with 8 activated per token (sparsity of 48). For detailed descriptions of MuonClip,
+architecture design, and training infrastructure, we refer to the Kimi K2 technical report [53].
+
+4.2   Model Architecture
+
+The multimodal architecture of Kimi K2.5 consists of three components: a three-dimensional native-resolution vision
+encoder (MoonViT-3D), an MLP projector, and the Kimi K2 MoE language model, following the design principles
+established in Kimi-VL [54].
+
+MoonViT-3D: Shared Embedding Space for Images and Videos In Kimi-VL, we employ MoonViT to natively
+process images at their original resolutions, eliminating the need for complex sub-image splitting and splicing oper-
+ations. Initialized from SigLIP-SO-400M [78], MoonViT incorporates the patch packing strategy from NaViT [15],
+where single images are divided into patches, ﬂattened, and sequentially concatenated into 1D sequences, thereby
+enabling efﬁcient simultaneous training on images at varying resolutions.
+To maximize the transfer of image understanding capabilities to video, we introduce MoonViT-3D with a uniﬁed
+architecture, fully shared parameters, and a consistent embedding space. By generalizing the “patch n’ pack“ philos-
+ophy to the temporal dimension, up to four consecutive frames are treated as a spatiotemporal volume: 2D patches
+from these frames are jointly ﬂattened and packed into a single 1D sequence, allowing the identical attention mecha-
+nism to operate seamlessly across both space and time. While the extra temporal attention improves understanding on
+high-speed motions and visual effects, the sharing maximizes knowledge generalization from static images to dynamic
+videos, achieving strong video understanding performance (see in Tab. 4) without requiring specialized video mod-
+ules or architectural bifurcation. Prior to the MLP projector, lightweight temporal pooling aggregates patches within
+each temporal chunk, yielding 4× temporal compression to signiﬁcantly extend feasible video length. The result is a
+uniﬁed pipeline where knowledge and ability obtained from image pretraining transfers holistically to videos through
+one shared parameter space and feature representation.
+
+4.3   Pre-training Pipeline
+
+As illustrated in Table 3, Kimi K2.5’s pre-training builds upon the Kimi K2 language model checkpoint and processes
+approximately 15T tokens across three stages: ﬁrst, standalone ViT training to establish a robust native-resolution
+visual encoder; second, joint pre-training to simultaneously enhance language and multimodal capabilities; and third,
+mid-training on high-quality data and long-context activation to reﬁne capabilities and extend context windows.
+
+ViT Training Stage The MoonViT-3D is trained on image-text and video-text pairs, where the text components con-
+sist of a variety of targets: image alt texts, synthetic captions of images and videos, grounding bboxes, and OCR texts.
+The training incorporates two objectives following CoCa [75]: a SigLIP [78] loss Lsiglip (a variant of contrastive loss)
+and a cross-entropy loss Lcaption for caption generation conditioned on input images. We adopt a two-stage alignment
+strategy. In the ﬁrst stage, we optimize solely the captioning loss Lcaption to align MoonViT-3D with Moonlight-16B-
+A3B [34], consuming 1T tokens, in which stage the ViT weights will be updated. A very short second stage follows,
+updating only the MLP projector to bridge the ViT with the 1T LLM for smoother joint pre-training.
+
+
+                                                           7
+                                                             Kimi K2.5                                      T ECHNICAL R EPORT
+
+
+
+Joint Training Stages The joint pre-training stage continues from a near-end Kimi K2 checkpoint over additional
+15T vision-text tokens at 4K sequence length. The data recipe extends Kimi K2’s pre-training distribution by in-
+troducing unique tokens, adjusting data proportions with increased weight on coding-related content, and controlling
+maximum epochs per data source. The third stage performs long-context activation with integrated higher-quality mid-
+training data, sequentially extending context length via YaRN [44] interpolation. This yields signiﬁcant generalization
+improvements in long-context text understanding and long video comprehension.
+
+4.4     Post-Training
+
+4.4.1    Supervised Fine-Tuning
+Following the SFT pipeline established by Kimi K2 [53], we developed K2.5 by synthesizing high-quality candidate
+responses from K2, K2 Thinking and a suite of proprietary in-house expert models. Our data generation strategy
+employs specialized pipelines tailored to speciﬁc domains, integrating human annotation with advanced prompt en-
+gineering and multi-stage veriﬁcation. This methodology produced a large-scale instruction-tuning dataset featuring
+diverse prompts and intricate reasoning trajectories, ultimately training the model to prioritize interactive reasoning
+and precise tool-calling for complex, real-world applications.
+
+4.4.2    Reinforcement Learning
+Reinforcement learning constitutes a crucial phase of our post-training. To facilitate joint optimization across text and
+vision modalities, as well as to enable PARL for agent swarm, we develop a Uniﬁed Agentic Reinforcement Learning
+Environment (Appendix D) and optimize the RL algorithms. Both text-vision joint RL and PARL are built upon the
+algorithms described in this section.
+
+Policy Optimization For each problem x sampled from a dataset D, K responses {y1 , . . . , yK } are generated using
+the previous policy πold . We optimize the model πθ with respect to the following objective:
+                                                                      !                                                  !2 
+                               K |y j |    πθ (yij |x, y0:i   )                                      πθ (yij |x, y0:i   )
+                            1
+        LRL (θ ) = Ex∼D  ∑ ∑ Clip                                                                                           .
+                                                          j                                                         j
+                                                                , α , β (r(x, y j ) − r̄(x)) − τ log                            (1)
+                            N j=1 i=1      πold (yij |x, y0:i
+                                                            j )                                      πold (yij |x, y0:i
+                                                                                                                      j )
+
+                                         j
+Here α , β , τ > 0 are hyperparameters, y0:i is the preﬁx up to the i-th token of the j-th response, N = ∑Ki=1 |yi | is the
+total number of generated tokens in a batch, r̄(x) = K1 ∑Kj=1 r(x, y j ) is the mean reward of all generated responses.
+This loss function departs from the policy optimization algorithm used in K1.5 [31] by introducing a token-level
+clipping mechanism designed to mitigate the off-policy divergence ampliﬁed by discrepancies between training and
+inference frameworks. The mechanism functions as a simple gradient masking scheme: policy gradients are computed
+normally for tokens with log-ratios within the interval [α , β ], while gradients for tokens falling outside this range are
+zeroed out. Notably, a key distinction from standard PPO clipping [50] is that our method relies strictly on the log-ratio
+to explicitly bound off-policy drift, regardless of the sign of the advantages. This approach aligns with recent strategies
+proposed to stabilize large-scale RL training [74, 79]. Empirically, we ﬁnd this mechanism essential for maintaining
+training stability in complex domains requiring long-horizon, multi-step tool-use reasoning. We employ the MuonClip
+optimizer [30, 34] to minimize this objective.
+
+Reward Function We apply a rule-based outcome reward for tasks with veriﬁable solutions, such as reasoning and
+agentic tasks. To optimize resource consumption, we also incorporate a budget-control reward aimed at enhancing
+token efﬁciency. For general-purpose tasks, we employ Generative Reward Models (GRMs) that provide granular
+evaluations aligned with Kimi’s internal value criteria. In addition, for visual tasks, we design task-speciﬁc reward
+functions to provide ﬁne-grained supervision. For visual grounding and point localization tasks, we employ an F1-
+based reward with soft matching: grounding tasks derive soft matches from Intersection over Union (IoU) and point
+tasks derive soft matches from Gaussian-weighted distances under optimal matching. For polygon segmentation tasks,
+we rasterize the predicted polygon into a binary mask and compute the segmentation IoU against the ground-truth
+mask to assign the reward. For OCR tasks, we adopt normalized edit distance to quantify character-level alignment
+between predictions and ground-truth. For counting tasks, rewards are assigned based on the absolute difference
+between predictions and ground-truth. Furthermore, we synthesize complex visual puzzle problems and utilize an
+LLM veriﬁer (Kimi K2) to provide feedback.
+
+Generative Reward Models Kimi K2 leverages a self-critique rubric reward for open-ended generation [53], and
+K2.5 extends this line of work by systematically deploying Generative Reward Models (GRMs) across a broad range
+
+
+                                                                8
+                                                          Kimi K2.5                                     T ECHNICAL R EPORT
+
+
+
+of agentic behaviors and multimodal trajectories. Rather than limiting reward modeling to conversational outputs,
+we apply GRMs on top of veriﬁed reward signals in diverse environments, including chat assistants, coding agents,
+search agents, and artifact-generating agents. Notably, GRMs function not as binary adjudicators, but as ﬁne-grained
+evaluators aligned with Kimi’s values that are critical to user experiences, such as helpfulness, response readiness,
+contextual relevance, appropriate level of detail, aesthetic quality of generated artifacts, and strict instruction following.
+This design allows the reward signal to capture nuanced preference gradients that are difﬁcult to encode with purely
+rule-based or task-speciﬁc veriﬁers. To mitigate reward hacking and overﬁtting to a single preference signal, we
+employ multiple alternative GRM rubrics tailored to different task contexts.
+
+Token Efﬁcient Reinforcement Learning Token efﬁciency is central to LLMs with test-time scaling. While test-
+time scaling inherently trades computation for reasoning quality, practical gains require algorithmic innovations that
+actively navigate this trade-off. Our previous ﬁndings indicate that imposing a problem-dependent budget effectively
+constrains inference-time compute, incentivizing the model to generate more concise chain of thought reasoning pat-
+terns without unnecessary token expansion [31, 53]. However, we also observe a length-overﬁtting phenomenon:
+models trained under rigid budget constraints often fail to generalize to higher compute scales. Consequently, they
+cannot effectively leverage additional inference-time tokens to solve complex problems, instead defaulting to truncated
+reasoning patterns.
+To this end, we propose Toggle, a training heuristic that alternates between inference-time scaling and budget-
+constrained optimization: for learning iteration t, the reward function is deﬁned by
+                                
+                      r(x, y) · I K1 ∑Ki=1 r(x, yi ) < λ or |yi | ≤ budget(x) if ⌊t/m⌋ (mod 2) = 0 (Phase0)
+         r̃(x, y) =                                                                                         .
+                      r(x, y)                                                 if ⌊t/m⌋ (mod 2) = 1 (Phase1)
+where λ and m are hyper-parameters of the algorithm and K is the number of rollouts per problem. Speciﬁcally, the
+algorithm alternates between two optimization phases every m iterations:
+
+  • Phase0 (budget limited phase): The model is trained to solve the problem within a task-dependent token budget.
+    To prevent a premature sacriﬁce of quality for efﬁciency, this constraint is conditionally applied: it is only enforced
+    when the model’s mean accuracy for a given problem exceeds the threshold λ .
+  • Phase1 (standard scaling phase): The model generates responses up to the maximum token limit, encouraging
+    the model to leverage computation for better inference-time scaling.
+
+The problem-dependent budget is estimated from the ρ -th percentile of token lengths among the subset of correct
+responses:
+                         budget(x) = Percentile ({|y j | | r(x, yi ) = 1, i = 1, . . . , K}, ρ ) .           (2)
+This budget is estimated once at the beginning of training and remains ﬁxed thereafter. Notably, Toggle functions
+as a stochastic alternating optimization for a bi-objective problem. It is speciﬁcally designed to reconcile reasoning
+capabilities with computational efﬁciency.
+We evaluate the effectiveness of Toggle on K2 Thinking [1]. As shown in Figure 5, we observe a consistent reduction in
+output length across nearly all benchmarks. On average, Toggle decreases output tokens by 25∼30% with a negligible
+impact on performance. We also observe that redundant patterns in the chain-of-thought, such as repeated veriﬁcations
+and mechanical calculations, decrease substantially. Furthermore, Toggle shows strong domain generalization. For
+example, when trained exclusively on mathematics and programming tasks, the model still achieves consistent token
+reductions on GPQA and MMLU-Pro with only marginal degradation in performance (Figure 5).
+
+4.5     Training Infrastructure
+
+Kimi K2.5 inherits the training infrastructure from Kimi K2 [53] with minimal modiﬁcations. For multimodal training,
+we propose Decoupled Encoder Process, where the vision encoder is incorporated into the existing pipeline with
+negligible additional overhead.
+
+4.5.1    Decoupled Encoder Process (DEP)
+In a typical multimodal training paradigm utilizing Pipeline Parallelism (PP), the vision encoder and text embedding
+are co-located in the ﬁrst stage of the pipeline (Stage-0). However, due to the inherent variations of multimodal
+input size (e.g., image counts and resolutions), Stage-0 suffers from drastic ﬂuctuations in both computational load
+and memory usage. This forces existing solutions to adopt custom PP conﬁgurations for vision-language models
+— for instance, [54] manually adjusts the number of text decoder layers in Stage-0 to reserve memory. While this
+
+
+                                                              9
+                                                          Kimi K2.5                                   T ECHNICAL R EPORT
+
+
+
+
+    Figure 5: Comparison of model performance and token usage for Kimi K2 Thinking following token-efﬁcient RL.
+
+
+compromise alleviates memory pressure, it does not fundamentally resolve the load imbalance caused by multimodal
+input sizes. More critically, it precludes the direct reuse of parallel strategies that have been highly optimized for
+text-only training.
+Leveraging the unique topological position of the visual encoder within the computation graph — speciﬁcally, its role
+as the start of the forward pass and the end of the backward pass — our training uses Decoupled Encoder Process
+(DEP), which is composed of three stages in each training step:
+    • Balanced Vision Forward: We ﬁrst execute the forward pass for all visual data in the global batch. Because the
+      vision encoder is small, we replicate it on all GPUs regardless of other parallelism strategies. During this phase,
+      the forward computational workload is evenly distributed across all GPUs based on load metrics (e.g., image or
+      patch counts). This eliminates load-imbalance caused by PP and visual token counts. To minimize peak memory
+      usage, we discard all intermediate activations, retaining only the ﬁnal output activations. The results are gathered
+      back to PP Stage-0;
+    • Backbone Training: This phase performs the forward and backward passes for the main transformer backbone.
+      By discarding intermediate activations in the preceding phase, we can now fully leverage any efﬁcient parallel
+      strategies validated in pure text training. After this phase, gradients are accumulated at the visual encoder output;
+    • Vision Recomputation & Backward: We re-compute the vision encoder forward pass, followed by a backward
+      pass to compute gradients for parameters in the vision encoder;
+DEP not only achieves load-balance, but also decouples the optimization strategy of the vision encoder and the main
+backbone. K2.5 seamlessly inherits the parallel strategy of K2, achieving a multimodal training efﬁciency of 90% rel-
+ative to text-only training. We note a concurrent work, LongCat-Flash-Omni [55], shares a similar design philosophy.
+
+5     Evaluations
+5.1     Main Results
+
+5.1.1    Evaluation Settings
+Benchmarks We evaluate Kimi K2.5 on a comprehensive benchmark suite spanning text-based reasoning, compet-
+itive and agentic coding, multimodal understanding (image and video), autonomous agentic execution, and computer
+use. Our benchmark taxonomy is organized along the following capability axes:
+    • Reasoning & General: Humanity’s Last Exam (HLE) [46], AIME 2025 [4], HMMT 2025 (Feb) [58], IMO-
+      AnswerBench [37], GPQA-Diamond [47], MMLU-Pro [64], SimpleQA Veriﬁed [22], AdvancedIF [23], and
+      LongBench v2 [9].
+
+
+                                                            10
+
