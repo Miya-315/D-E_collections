@@ -1,12 +1,11 @@
-# slime SFT（监督微调）概览
+# Slime SFT
 
-**目的**：说明在 `slime` 框架下进行监督微调（SFT）的主要差异、训练流程、关键配置项与示例，便于从入门到实践。
 
-**注意**：本文档以 `slime` 仓库中的实现为准，示例配置参考 `scripts/*-sft.sh`（如 `run-glm4.7-flash-sft.sh`）中的 `SFT_ARGS`。
+**注意**：本文档以 `slime` 仓库中的实现为准，示例配置参考 `run-glm4.7-flash-sft.sh`中的 `SFT_ARGS`。
 
 ## 目录
 - Slime SFT 与常规模型微调的区别
-- 训练流程（按步骤）
+- 训练流程
 - 关键参数说明
 - 示例配置片段
 - 优点与实践建议
@@ -39,7 +38,7 @@
      - 生成 `token_ids`、`loss_mask`、`response_length` 等字段
      - 将 `reward` 置 0（SFT 无 reward）
 
-4. 训练主循环（`train.py` / `train_async.py`）
+4. 训练主循环（ `train_async.py`）
    - 从 rollout manager 获取 batch（可能是同步或异步），调用 `actor_model.async_train()` 执行训练步骤。
    - 每步前向 -> 仅对未被 mask 的 token 计算 loss -> 反向 -> 优化器更新。
 
@@ -94,7 +93,7 @@ SFT_ARGS=(
 ###  SFT数据流动全流程
 
 1. 数据准备 
-你有一堆 jsonl 文件（如 math_with_tools_slime_format.jsonl），每一行是一个对话样本，包含 prompt、messages、tools 等字段。
+有一堆 jsonl 文件（如 math_with_tools_slime_format.jsonl），每一行是一个对话样本，包含 prompt、messages、tools 等字段。
 这些数据通常已经过预处理，格式统一，便于后续加载。
 1. 数据加载（slime/utils/data.py 的 Dataset 类）
 训练脚本会通过 Dataset 类加载这些 jsonl 数据。
@@ -117,3 +116,33 @@ Processor 负责图片等多模态数据的预处理（如果有）。
 1. 保存与恢复
 训练到一定步数会保存 checkpoint（模型快照）。
 可以随时恢复训练，继续学习。
+
+| 阶段                    | 时间          | 进程                    | 关键事件                                 | 技术细节                                              |
+| :-------------------- | :---------- | :-------------------- | :----------------------------------- | :------------------------------------------------ |
+| **资源调度**              | 09:48:15    | Placement Group       | 创建 8 GPU 资源组                         | Ray 集群初始化，绑定节点 `10.244.195.16`                    |
+|                       |             |                       | ⚠️ Triton 不支持，回退 CPU                 | `fla/utils.py:215`，可能影响 attention 性能              |
+| **RolloutManager 启动** | 09:48:16    | `pid=1249960`         | 检测 Megatron Core + FSDP              | 使用 Megatron-FSDP 混合并行策略                           |
+|                       | 09:48:17    |                       | **启动 SGLang Router**                 | 端口 `:3492`，`backend='sglang'`                     |
+|                       |             |                       | 配置参数                                 | `policy='cache_aware'`，`history_backend='memory'` |
+| **数据加载**              | 09:48:20    |                       | ✅ **加载 SFT 数据集**                     | `math_with_tools_slime_format.jsonl`              |
+|                       |             |                       | 样本数：**23,329** 条                     | 格式：带 tool 的 math 数据                               |
+|                       |             |                       | 样本结构初始化                              | `status=PENDING`，`response=''`，`reward=None`      |
+| **函数导入**              | 09:48:22    |                       | 导入 rollout 生成函数                      | `slime.rollout.sft_rollout.generate_rollout`      |
+|                       |             |                       | 导入评估函数                               | `eval_generate_rollout`（同名）                       |
+| **训练 Actor 初始化**      | 09:48:32    | `pid=1250342`         | Rank 0 启动                            | 应用 `torch.distributed` monkey patch               |
+|                       | 09:48:44-45 | `pid=1250647/1250653` | Rank 1-2 启动                          |                                                   |
+|                       |             | ...                   | Ranks 3-7 启动（共 8 个）                  |                                                   |
+| **分布式组网**             | 09:48:45    | Rank 0                | `[Gloo] Rank 0 connected to 7 peers` | TP=8（Tensor Parallel）确认                           |
+| **硬件绑定**              | 09:48:45    | All Ranks             | `Set NUMA affinity for GPU 0-7`      | 每个 Actor 绑定独立 GPU                                 |
+| **Tokenizer 加载**      | 09:48:45    | All Ranks             | ⚠️ Legacy tokenizer 警告               | 建议迁移到 `megatron.core.tokenizers`                  |
+| **模型初始化**             | 09:48:45    | Rank 0                | `building HuggingFaceTokenizer`      |                                                   |
+|                       |             |                       | `setting random seeds to 1234`       | 确定性训练                                             |
+|                       |             |                       | **参数量：3.8B**                         | `tensor, pipeline rank (0,0): 3,805,411,328`      |
+|                       |             |                       | 其他 Ranks：3.78B                       | `rank (2,1): 3,782,175,488`                       |
+| **Checkpoint 加载**     | 09:49:11    | All Ranks             | 加载 sharded\_state\_dict metadata     | `fully_sharded_model_space`                       |
+|                       |             |                       | ⚠️ `allow_shape_mismatch` 参数         | 非标准参数，兼容处理                                        |
+|                       | 09:49:47    |                       | **加载分布式检查点**                         | `GLM-4.7-Flash_slime/`                            |
+|                       |             |                       | 恢复迭代：**1999**                        | 从 checkpoint 继续训练                                 |
+|                       |             |                       | ⚠️ `load_state_dict` deprecated      | 建议改用 `load` API                                   |
+|                       |             |                       | ⚠️ ShardedTensor → DTensor           | PyTorch 分布式演进警告                                   |
+| **训练就绪**              | ~09:49:48   |                       | 所有 Ranks 完成初始化                       | 准备进入 SFT 训练循环                                     |
